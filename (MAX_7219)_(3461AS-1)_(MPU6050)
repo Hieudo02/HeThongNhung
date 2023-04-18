@@ -1,0 +1,225 @@
+//sudo i2cdetect -y 1
+#include <stdio.h>
+#include <wiringPi.h>
+#include <wiringPiI2C.h>
+#include <stdint.h>     // int16_t
+#include <math.h>       // arctan (gcc ... -lwiringPi -lm)
+#include <stdlib.h>     //exit(1)
+#include <wiringPiSPI.h>
+#include <string.h> //strlen
+
+#define Sample_rate     25  // 0x19 (de co so 16 or 10 deu dc)
+#define Config          26  // 0x1A
+#define Gyro_config     27  // 0x1B
+#define Acc_config      28
+#define Interrupt       56
+#define PWR_Managment   107
+
+//3 trục x, y, z
+#define Acc_X           59 // 59-high, 60-low
+#define Acc_Y           61 // 61-high, 62-low
+#define Acc_Z           63 // 63-high, 64-low
+
+#define spi0   0
+uint8_t buf[2];
+
+void sendData(uint8_t address, uint8_t data){
+    buf[0] = address;
+    buf[1] = data;
+    wiringPiSPIDataRW(spi0, buf, 2);
+}
+
+void Init_MAX7219(void){
+    // set decode mode: 0x09FF
+    sendData(0x09,0xFF);
+    // set intensity: 0x0A09
+    sendData(0x0A, 9);
+    // scan limit: 0x0B07
+    sendData(0x0B, 7);
+    // no shutdown, turn off display test
+    sendData(0x0C, 1);
+    sendData(0x0F, 0);
+}
+
+int mpu;
+
+void Init_6050(void){
+    // register 25->28, 56, 107
+
+    // Sample_rate: 500Hz
+    wiringPiI2CWriteReg8(mpu, Sample_rate, 15);
+    // Không sử dụng nguồn xung ngoài, tắt DLFP
+    wiringPiI2CWriteReg8(mpu, Config, 0);
+    // gyro FS: +- 500 o/s
+    wiringPiI2CWriteReg8(mpu, Gyro_config, 0x08);
+    // acc FS: +- 8g
+    wiringPiI2CWriteReg8(mpu, Acc_config, 0x10);
+    // Mở interrupt của data ready
+    wiringPiI2CWriteReg8(mpu, Interrupt, 1);
+    // Chọn nguồn xung Gyro X
+    wiringPiI2CWriteReg8(mpu, PWR_Managment, 0x01);
+}
+
+int16_t readSensor(unsigned char sensor){ //parameter là address của sensor muốn đọc
+    // Tạo biến chứa mức cao, thấp, và ghép lại 2 giá trị
+    int16_t high, low, data;
+    high = wiringPiI2CReadReg8(mpu, sensor);
+    low = wiringPiI2CReadReg8(mpu, sensor + 1);
+    // data là gộp 2 thanh ghi lại vs nhau (thành thanh ghi 16 bits)
+    data = (high << 8) | low; // '|' là phép OR
+    /* 
+    data đang là giá trị raw, chứ không phải giá trị của gia tốc 
+    Muốn ra giá trị gia tốc phải lấy data chia cho độ nhạy tương ứng (LSB Sensitivity)
+    Set bên trên là +-8g tương ứng với 4096 LSB/g 
+    */
+
+   return data;
+}
+
+void display_float(float num, uint8_t dec){
+    int32_t integerPart = num;
+    int32_t fractionalPart = (num - integerPart) * pow(10,dec);
+    int32_t number = integerPart*pow(10,dec) + fractionalPart;
+
+    // count the number of digits
+    uint8_t count=1;
+    int32_t n = number;
+    while(n/10){
+        count++;
+        n = n/10;
+    }
+    //printf("count: %d\n", count);
+
+    // set scanlimit (digit)
+    sendData(0x0B, 7); //digit là vị trí của chữ số cần hiển thị (bắt đầu từ 0)
+
+    if (num >= 0 && num < 1){
+        sendData(2, 0|0x80);
+        for (int i = 0; i < count; i++) {
+            sendData(i+1, number % 10);
+            number = number / 10;
+        }
+    }
+    else{
+        for(int i=0; i<count; i++){
+            if(i==dec)
+                sendData(i+1,(number%10)|0x80); // turn on dot segment 
+            else
+                sendData(i+1,number%10);
+
+            number = number/10;
+        }
+    }
+}
+
+void display_float2(float num, uint8_t dec){
+    int32_t integerPart = num;
+    int32_t fractionalPart = (num - integerPart) * pow(10,dec);
+    int32_t number = integerPart*pow(10,dec) + fractionalPart;
+
+    // count the number of digits
+    uint8_t count=1;
+    int32_t n = number;
+    while(n/10){
+        count++;
+        n = n/10;
+    }
+    //printf("count: %d\n", count);
+
+    // set scanlimit (digit)
+    sendData(0x0B, 7); //digit là vị trí của chữ số cần hiển thị (bắt đầu từ 0)
+
+    if (num >= 0 && num < 1){
+        sendData(6, 0|0x80);
+        for (int i = 0; i < count; i++) {
+            sendData(i+5, number % 10);
+            number = number / 10;
+        }
+    }
+    else{
+        for(int i=0; i<count; i++){
+            if(i==dec)
+                sendData(i+5,(number%10)|0x80); // turn on dot segment 
+            else
+                sendData(i+5,number%10);
+
+            number = number/10;
+        }
+    }
+}
+
+int main(void){
+    wiringPiSetup();
+
+    // setup SPI interface
+    wiringPiSPISetup(spi0, 10000000);
+    // set operational mode for max7219
+    Init_MAX7219();
+
+    // Setup giao tiep I2C
+    mpu = wiringPiI2CSetup(0x68); //mức 0
+
+    //Check I2C connection
+	if(wiringPiI2CReadReg8(mpu, 0x75) != 0x68) {
+		printf("Connection failed!\n");
+		exit(1);
+	}
+
+    delay(100); //100ms
+    // Thiết lập chế độ đo cho MPU6050
+    Init_6050();
+
+    // Đọc giá trị đo
+    while (1)
+    {
+        // Ax, Ay, Az là giá trị gia tốc theo trục X, Y, Z
+        float Ax = (float)readSensor(Acc_X)/4096.0; 
+        float Ay = (float)readSensor(Acc_Y)/4096.0;
+        float Az = (float)readSensor(Acc_Z)/4096.0;
+
+        //Tính góc nghiêng theo trục X (Roll), Y (Pitch)
+        //atan2 trả về radian => nhân 180 và chia pi để chuyển về độ
+        float pitch = atan2(Ax, sqrt(pow(Ay,2) + pow(Az,2))) * 180 / 3.14;
+        float roll = atan2(Ay, sqrt(pow(Ax,2) + pow(Az,2))) * 180 / 3.14;
+
+        // send zeroes to all digits to clear the display
+        for(int i = 1; i <= 8; i++) {
+            sendData(i, 0x0F);
+        }
+        printf("Góc nghiêng theo trục X, Y lần lượt: %.1f %.1f\n", roll, pitch);
+
+        float a = roll;
+        float b = pitch;
+
+        if(fabs(roll) > 45){
+            a = 45;
+            display_float(fabs(b), 1);
+            display_float2(fabs(a), 1);
+            
+            for(int i = 5; i <= 8; i++){
+                sendData(i, 0x0F);
+            }
+            delay(100);
+            
+            display_float(fabs(b), 1);
+        }
+        
+        if(fabs(pitch) > 45){
+            b = 45;
+            display_float(fabs(b), 1);
+            display_float2(fabs(a), 1);
+            
+            for(int i = 1; i <= 4; i++){
+                sendData(i, 0x0F);
+            }
+            delay(100);
+
+            display_float2(fabs(a), 1);
+        }
+        
+        display_float(fabs(b), 1);
+        display_float2(fabs(a), 1);
+        delay(100);
+    }
+    return 0;
+}

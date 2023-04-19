@@ -39,7 +39,7 @@ int16_t readSensor(unsigned char sensor){ //parameter là address của sensor m
     // Tạo biến chứa mức cao, thấp, và ghép lại 2 giá trị
     int16_t high, low, data;
     high = wiringPiI2CReadReg8(mpu, sensor);
-    high = wiringPiI2CReadReg8(mpu, sensor + 1);
+    low = wiringPiI2CReadReg8(mpu, sensor + 1);
     // data là gộp 2 thanh ghi lại vs nhau (thành thanh ghi 16 bits)
     data = (high << 8) | low; // '|' là phép OR
     /* 
